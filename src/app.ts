@@ -13,15 +13,41 @@ import {
 } from "./lib/gamification";
 import { renderMarkdownLite } from "./lib/renderMarkdown";
 import {
-  hasSeenMobileNavHint,
+  hasSeenWelcome,
   loadState,
-  markMobileNavHintSeen,
+  markWelcomeSeen,
   saveState,
   type PersistedState,
 } from "./lib/storage";
 import type { Assignment, ChatMessage, CriterionResult, EvaluationResult } from "./types";
 import { EXCELLENT_PERCENT, PASS_PERCENT } from "./types";
+import { applyStudioTheme } from "./lib/studioTheme";
 import "./styles/global.css";
+import "./styles/themes.css";
+import "./styles/goal-variants.css";
+
+type AttemptPillTier = "none" | "high" | "mid" | "low";
+
+function lastEvaluationPercent(messages: ChatMessage[]): number | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const ev = messages[i]?.evaluation;
+    if (ev) return ev.percent;
+  }
+  return null;
+}
+
+/** high — зачёт (75%+), mid — средний результат, low — слабая попытка */
+function attemptPillTier(
+  attempt: number,
+  messages: ChatMessage[],
+  bestScore: number,
+): AttemptPillTier {
+  if (attempt === 0) return "none";
+  const pct = lastEvaluationPercent(messages) ?? bestScore;
+  if (pct >= PASS_PERCENT) return "high";
+  if (pct >= 45) return "mid";
+  return "low";
+}
 
 const QUEST_ITEMS: { id: string; label: string; bonus?: boolean }[] = [
   { id: "role", label: "Роль для ИИ" },
@@ -166,35 +192,47 @@ function questProgressFromEvaluation(evaluation: EvaluationResult | null): Set<s
   return done;
 }
 
-function missionBriefHtml(
+function missionBoardHtml(
   assignment: Assignment,
   questDone: Set<string>,
 ): string {
-  const questItems = QUEST_ITEMS.map((q) => {
-    const done = questDone.has(q.id) ? " quest__item--done" : "";
-    const bonus = q.bonus ? " quest__item--bonus" : "";
-    return `<li class="quest__item${done}${bonus}"><span class="quest__check" aria-hidden="true"></span><span>${q.label}${q.bonus ? " (бонус)" : ""}</span></li>`;
+  const doneCount = QUEST_ITEMS.filter((q) => questDone.has(q.id)).length;
+  const trackPct = Math.round((doneCount / QUEST_ITEMS.length) * 100);
+  const trackItems = QUEST_ITEMS.map((q, i) => {
+    const isDone = questDone.has(q.id);
+    const isCurrent =
+      !isDone && (i === 0 || questDone.has(QUEST_ITEMS[i - 1]!.id));
+    const state = isDone
+      ? " studio-track__node--done"
+      : " studio-track__node--pending";
+    const current = isCurrent ? " studio-track__node--current" : "";
+    return `<li class="studio-track__node${state}${current}"><span class="studio-track__dot" aria-hidden="true"></span><span class="studio-track__name">${q.label}</span></li>`;
   }).join("");
 
-  return `<aside class="mission" aria-label="Описание задания">
-    <div class="mission__hero">
-      <span class="mission__tag">✦ Миссия 1</span>
-      <h2 class="mission__title">${assignment.title}</h2>
-      <p class="mission__intro">${assignment.intro}</p>
+  return `<div class="studio-board" aria-label="Доска задания">
+    <header class="studio-board__head studio-board__head--compact">
+      <h2 class="studio-board__title">${assignment.title}</h2>
+    </header>
+    <div class="studio-bento">
+      <article class="studio-bento__cell studio-bento__cell--context context-block">
+        <h3 class="studio-bento__label">Контекст</h3>
+        <p>${assignment.situation}</p>
+      </article>
+      <article class="studio-bento__cell studio-bento__cell--goal goal-block">
+        <span class="goal-block__icon" aria-hidden="true"></span>
+        <h3 class="studio-bento__label">Цель</h3>
+        <p>${assignment.goal}</p>
+      </article>
     </div>
-    <div class="mission-card">
-      <p class="mission-card__label"><span class="mission-card__icon mission-card__icon--situation">📄</span> Ситуация</p>
-      <p>${assignment.situation}</p>
-    </div>
-    <div class="mission-card">
-      <p class="mission-card__label"><span class="mission-card__icon mission-card__icon--goal">🎯</span> Ваша цель</p>
-      <p>${assignment.goal}</p>
-    </div>
-    <div class="quest">
-      <p class="quest__title">Чек-лист промпта</p>
-      <ul class="quest__list">${questItems}</ul>
-    </div>
-  </aside>`;
+    <section class="studio-track" aria-label="Прогресс по чек-листу">
+      <div class="studio-track__meta">
+        <span class="studio-track__caption">Готовность промпта</span>
+        <span class="studio-track__pct">${trackPct}%</span>
+      </div>
+      <div class="studio-track__bar" aria-hidden="true"><span style="width:${trackPct}%"></span></div>
+      <ol class="studio-track__nodes">${trackItems}</ol>
+    </section>
+  </div>`;
 }
 
 function headerHudHtml(
@@ -248,6 +286,8 @@ export function mountApp(root: HTMLElement): void {
   const assignment = assignments[0];
   const saved = loadState(assignment.id);
 
+  applyStudioTheme();
+
   let attempt = saved?.attempt ?? 0;
   let bestScore = saved?.bestScore ?? 0;
   let hasPassed = saved?.hasPassed ?? false;
@@ -261,7 +301,7 @@ export function mountApp(root: HTMLElement): void {
   );
   let newBadgeIds: string[] = [];
 
-  root.innerHTML = `<div class="app">
+  root.innerHTML = `<div class="app" id="app">
     <header class="header">
       <div class="header__brand">
         <span class="header__logo" aria-hidden="true">${LOGO_SVG}</span>
@@ -273,35 +313,55 @@ export function mountApp(root: HTMLElement): void {
       <div id="header-hud"></div>
     </header>
     <div class="main">
-      <nav class="pane-switch" id="pane-switch" aria-label="Переключение разделов">
-        <button type="button" class="pane-switch__btn pane-switch__btn--active" data-pane="mission">Задание</button>
-        <button type="button" class="pane-switch__btn" data-pane="chat">Диалог</button>
-      </nav>
-      <p class="pane-switch__hint" id="pane-hint">Свайп влево — к диалогу · вправо — к заданию</p>
-      <div class="main__track" id="main-track">
-        <section class="main__pane main__pane--mission" id="mission-panel" aria-label="Задание"></section>
-        <section class="main__pane main__pane--chat" aria-label="Диалог с проверкой">
-      <div class="chat-panel">
-        <div class="chat-panel__head">
-          <h2 class="chat-panel__title">Диалог с проверкой</h2>
-          <span class="chat-panel__attempts" id="attempt-label"></span>
-        </div>
-        <main class="chat" id="chat"><div class="chat__messages" id="messages"></div></main>
-        <footer class="footer">
-          <div class="composer">
-            <p class="composer__label"><span class="composer__label-dot" aria-hidden="true"></span> Ваш промпт для нейросети</p>
-            <div class="composer__inner">
-              <textarea class="composer__input" id="prompt-input" rows="1" aria-label="Ваш промпт"
-                placeholder="Опишите роль, контекст, задачу, тон и ограничения…"></textarea>
-              <button type="button" class="composer__send" id="send-btn" aria-label="Отправить промпт">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
-              </button>
+      <div class="studio-shell">
+        <aside class="studio-rail" aria-label="Маршрут тренировки">
+          <button type="button" class="studio-rail__node studio-rail__node--on" data-tooltip="Шаг 1: прочитайте блок «Контекст»" aria-label="Шаг 1: Контекст">1</button>
+          <button type="button" class="studio-rail__node studio-rail__node--on" data-tooltip="Шаг 2: прочитайте блок «Цель»" aria-label="Шаг 2: Цель">2</button>
+          <button type="button" class="studio-rail__node studio-rail__node--on" data-tooltip="Шаг 3: сверьтесь с чек-листом готовности" aria-label="Шаг 3: Чек-лист">3</button>
+          <button type="button" class="studio-rail__node studio-rail__node--write" data-tooltip="Шаг 4: напишите промпт в терминале ниже" aria-label="Шаг 4: Промпт в терминале">✎</button>
+        </aside>
+        <div class="studio-shell__main">
+          <section class="studio-shell__board" id="mission-root" aria-label="Доска задания"></section>
+          <section class="studio-shell__terminal" id="studio-terminal" aria-label="Терминал проверки">
+            <div class="studio-terminal__bar">
+              <span class="studio-terminal__title">Терминал · проверка промпта</span>
+              <div class="studio-terminal__actions">
+                <button
+                  type="button"
+                  class="studio-terminal__fs-btn"
+                  id="terminal-fullscreen-btn"
+                  aria-label="Развернуть терминал на весь экран"
+                  aria-pressed="false"
+                  title="На весь экран"
+                >
+                  <svg class="studio-terminal__fs-icon studio-terminal__fs-icon--expand" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3"/></svg>
+                  <svg class="studio-terminal__fs-icon studio-terminal__fs-icon--collapse" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 14h6v6M14 4h6v6M4 10V4h6M14 20v-6h6"/></svg>
+                </button>
+                <span class="attempt-pill attempt-pill--none" id="attempt-label"></span>
+              </div>
             </div>
-            <p class="composer__hint">Enter — отправить · Shift+Enter — новая строка</p>
-          </div>
-        </footer>
-      </div>
-        </section>
+            <div class="studio-terminal__body">
+              <div id="chat-panel" class="chat-panel" data-layout="studio">
+                <main class="chat" id="chat"><div class="chat__messages" id="messages"></div></main>
+              </div>
+              <div id="composer-root" class="composer-root" data-layout="studio">
+                <footer class="footer">
+                  <div class="composer">
+                    <p class="composer__label"><span class="composer__label-dot" aria-hidden="true"></span> Ваш промпт для нейросети</p>
+                    <div class="composer__inner">
+                      <textarea class="composer__input" id="prompt-input" rows="1" aria-label="Ваш промпт"
+                        placeholder="Опишите роль, контекст, задачу, тон и ограничения…"></textarea>
+                      <button type="button" class="composer__send" id="send-btn" aria-label="Отправить промпт">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+                      </button>
+                    </div>
+                    <p class="composer__hint">Enter — отправить · Shift+Enter — новая строка</p>
+                  </div>
+                </footer>
+              </div>
+            </div>
+          </section>
+        </div>
       </div>
     </div>
     <div class="toast-xp" id="xp-toast" role="status" aria-live="polite"></div>
@@ -330,32 +390,34 @@ export function mountApp(root: HTMLElement): void {
         </div>
       </div>
     </div>
-    <div class="mobile-onboard" id="mobile-onboard" hidden aria-hidden="true">
-      <div class="mobile-onboard__backdrop" aria-hidden="true"></div>
+    <div class="welcome-modal" id="welcome-modal" hidden aria-hidden="true">
+      <div class="welcome-modal__backdrop" id="welcome-modal-backdrop" aria-hidden="true"></div>
       <div
-        class="mobile-onboard__dialog"
+        class="welcome-modal__dialog"
         role="dialog"
         aria-modal="true"
-        aria-labelledby="mobile-onboard-title"
+        aria-labelledby="welcome-modal-title"
+        aria-describedby="welcome-modal-desc"
       >
-        <span class="mobile-onboard__emoji" aria-hidden="true">👋</span>
-        <h2 class="mobile-onboard__title" id="mobile-onboard-title">Как пользоваться</h2>
-        <ol class="mobile-onboard__steps">
-          <li class="mobile-onboard__step">
-            <span class="mobile-onboard__step-num">1</span>
-            <span>На вкладке <strong>«Задание»</strong> прочитайте ситуацию, цель и чек-лист — от них зависит ваш промпт.</span>
+        <span class="welcome-modal__emoji" aria-hidden="true">👋</span>
+        <h2 class="welcome-modal__title" id="welcome-modal-title">Добро пожаловать в тренажёр</h2>
+        <p class="welcome-modal__intro" id="welcome-modal-desc">${assignment.intro}</p>
+        <ol class="welcome-modal__steps">
+          <li class="welcome-modal__step">
+            <span class="welcome-modal__step-num">1</span>
+            <span>На доске задания прочитайте блоки <strong>«Контекст»</strong> и <strong>«Цель»</strong> — от них зависит ваш промпт.</span>
           </li>
-          <li class="mobile-onboard__step">
-            <span class="mobile-onboard__step-num">2</span>
-            <span>Переключитесь в <strong>«Диалог»</strong>: свайп влево или кнопка сверху. Напишите промпт и отправьте.</span>
+          <li class="welcome-modal__step">
+            <span class="welcome-modal__step-num">2</span>
+            <span>Посмотрите <strong>готовность промпта</strong> (чек-лист): по мере попыток пункты будут закрываться.</span>
           </li>
-          <li class="mobile-onboard__step">
-            <span class="mobile-onboard__step-num">3</span>
-            <span>Нужно освежить условие? <strong>Свайп вправо</strong> или снова нажмите «Задание».</span>
+          <li class="welcome-modal__step">
+            <span class="welcome-modal__step-num">3</span>
+            <span>В <strong>терминале</strong> внизу напишите промпт и отправьте — тренажёр проверит структуру без вызова нейросети.</span>
           </li>
         </ol>
-        <button type="button" class="mobile-onboard__btn" id="mobile-onboard-ok">
-          Понятно, к заданию
+        <button type="button" class="welcome-modal__btn" id="welcome-modal-ok">
+          Прочитал(а), к тренировке
         </button>
       </div>
     </div>
@@ -364,41 +426,107 @@ export function mountApp(root: HTMLElement): void {
   const messagesEl = root.querySelector("#messages") as HTMLElement;
   const chatEl = root.querySelector("#chat") as HTMLElement;
   const headerHud = root.querySelector("#header-hud") as HTMLElement;
-  const missionPanel = root.querySelector("#mission-panel") as HTMLElement;
+  const missionRoot = root.querySelector("#mission-root") as HTMLElement;
+  const studioTerminal = root.querySelector("#studio-terminal") as HTMLElement;
+  const terminalFullscreenBtn = root.querySelector(
+    "#terminal-fullscreen-btn",
+  ) as HTMLButtonElement;
   const attemptLabel = root.querySelector("#attempt-label") as HTMLElement;
   const input = root.querySelector("#prompt-input") as HTMLTextAreaElement;
   const sendBtn = root.querySelector("#send-btn") as HTMLButtonElement;
   const xpToast = root.querySelector("#xp-toast") as HTMLElement;
-  const mainTrack = root.querySelector("#main-track") as HTMLElement;
-  const paneSwitch = root.querySelector("#pane-switch") as HTMLElement;
-  const paneButtons = paneSwitch.querySelectorAll<HTMLButtonElement>(".pane-switch__btn");
   const passModal = root.querySelector("#pass-modal") as HTMLElement;
   const passModalScore = root.querySelector("#pass-modal-score") as HTMLElement;
   const passModalImprove = root.querySelector("#pass-modal-improve") as HTMLButtonElement;
   const passModalLms = root.querySelector("#pass-modal-lms") as HTMLButtonElement;
-  const mobileOnboard = root.querySelector("#mobile-onboard") as HTMLElement;
-  const mobileOnboardOk = root.querySelector("#mobile-onboard-ok") as HTMLButtonElement;
+  const welcomeModal = root.querySelector("#welcome-modal") as HTMLElement;
+  const welcomeModalOk = root.querySelector("#welcome-modal-ok") as HTMLButtonElement;
+  const welcomeModalBackdrop = root.querySelector(
+    "#welcome-modal-backdrop",
+  ) as HTMLElement;
+  function syncAttemptLabels(): void {
+    const tier = attemptPillTier(attempt, messages, bestScore);
+    const pct = lastEvaluationPercent(messages);
+    let text = "Первая попытка — вперёд";
+    if (attempt > 0) {
+      text =
+        pct != null
+          ? `Попыток: ${attempt} · ${pct}%`
+          : `Попыток: ${attempt}`;
+    }
+    attemptLabel.className = `attempt-pill attempt-pill--${tier}`;
+    attemptLabel.textContent = text;
+  }
 
-  function openMobileOnboard(): void {
-    mobileOnboard.hidden = false;
-    mobileOnboard.setAttribute("aria-hidden", "false");
+  function focusTerminal(): void {
+    scrollChat();
+    if (isMobileLayout()) {
+      studioTerminal.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+  }
+
+  function isTerminalExpanded(): boolean {
+    return (
+      document.fullscreenElement === studioTerminal ||
+      studioTerminal.classList.contains("studio-shell__terminal--expanded")
+    );
+  }
+
+  function syncTerminalFullscreenUi(): void {
+    const on = isTerminalExpanded();
+    terminalFullscreenBtn.setAttribute("aria-pressed", on ? "true" : "false");
+    terminalFullscreenBtn.setAttribute(
+      "aria-label",
+      on ? "Свернуть терминал" : "Развернуть терминал на весь экран",
+    );
+    terminalFullscreenBtn.title = on ? "Свернуть" : "На весь экран";
+    studioTerminal.classList.toggle("studio-shell__terminal--expanded", on);
+  }
+
+  async function toggleTerminalFullscreen(): Promise<void> {
+    try {
+      if (isTerminalExpanded()) {
+        if (document.fullscreenElement === studioTerminal) {
+          await document.exitFullscreen();
+        } else {
+          studioTerminal.classList.remove("studio-shell__terminal--expanded");
+        }
+      } else if (studioTerminal.requestFullscreen) {
+        await studioTerminal.requestFullscreen();
+      } else {
+        studioTerminal.classList.add("studio-shell__terminal--expanded");
+      }
+    } catch {
+      studioTerminal.classList.toggle("studio-shell__terminal--expanded");
+    }
+    syncTerminalFullscreenUi();
+  }
+
+  terminalFullscreenBtn.addEventListener("click", () => {
+    void toggleTerminalFullscreen();
+  });
+  document.addEventListener("fullscreenchange", () => syncTerminalFullscreenUi());
+
+  function openWelcomeModal(): void {
+    welcomeModal.hidden = false;
+    welcomeModal.setAttribute("aria-hidden", "false");
     document.body.classList.add("modal-open");
-    scrollToPane("mission", false);
-    mobileOnboardOk.focus();
+    welcomeModalOk.focus();
   }
 
-  function closeMobileOnboard(): void {
-    mobileOnboard.hidden = true;
-    mobileOnboard.setAttribute("aria-hidden", "true");
+  function closeWelcomeModal(): void {
+    welcomeModal.hidden = true;
+    welcomeModal.setAttribute("aria-hidden", "true");
     document.body.classList.remove("modal-open");
-    markMobileNavHintSeen();
+    markWelcomeSeen();
   }
 
-  mobileOnboardOk.addEventListener("click", () => closeMobileOnboard());
+  welcomeModalOk.addEventListener("click", () => closeWelcomeModal());
+  welcomeModalBackdrop.addEventListener("click", () => closeWelcomeModal());
 
-  function maybeShowMobileOnboard(): void {
-    if (!isMobileLayout() || hasSeenMobileNavHint()) return;
-    window.setTimeout(() => openMobileOnboard(), 350);
+  function maybeShowWelcome(): void {
+    if (hasSeenWelcome()) return;
+    window.setTimeout(() => openWelcomeModal(), 400);
   }
 
   function openPassModal(score: number): void {
@@ -439,48 +567,8 @@ export function mountApp(root: HTMLElement): void {
     return window.matchMedia("(max-width: 860px)").matches;
   }
 
-  function scrollToPane(pane: "mission" | "chat", smooth = true): void {
-    if (!isMobileLayout()) return;
-    const index = pane === "mission" ? 0 : 1;
-    mainTrack.scrollTo({
-      left: index * mainTrack.clientWidth,
-      behavior: smooth ? "smooth" : "auto",
-    });
-  }
-
-  function updatePaneSwitchFromScroll(): void {
-    if (!isMobileLayout()) return;
-    const index = Math.round(mainTrack.scrollLeft / Math.max(mainTrack.clientWidth, 1));
-    paneButtons.forEach((btn, i) => {
-      const active = i === index;
-      btn.classList.toggle("pane-switch__btn--active", active);
-      btn.setAttribute("aria-selected", active ? "true" : "false");
-    });
-  }
-
-  function initMobilePanePosition(): void {
-    if (!isMobileLayout()) return;
-    const pane = attempt > 0 || messages.length > 0 ? "chat" : "mission";
-    requestAnimationFrame(() => scrollToPane(pane, false));
-  }
-
-  paneSwitch.addEventListener("click", (e) => {
-    const btn = (e.target as HTMLElement).closest<HTMLButtonElement>("[data-pane]");
-    if (!btn) return;
-    scrollToPane(btn.dataset.pane as "mission" | "chat");
-  });
-
-  mainTrack.addEventListener("scroll", () => updatePaneSwitchFromScroll(), {
-    passive: true,
-  });
-
-  window.addEventListener("resize", () => {
-    updatePaneSwitchFromScroll();
-    if (isMobileLayout()) initMobilePanePosition();
-  });
-
   function renderMission(): void {
-    missionPanel.innerHTML = missionBriefHtml(assignment, lastQuestDone);
+    missionRoot.innerHTML = missionBoardHtml(assignment, lastQuestDone);
   }
 
   function renderHeader(): void {
@@ -491,8 +579,7 @@ export function mountApp(root: HTMLElement): void {
       badges,
       newBadgeIds,
     );
-    attemptLabel.textContent =
-      attempt > 0 ? `Попыток: ${attempt}` : "Первая попытка — вперёд";
+    syncAttemptLabels();
   }
 
   function scrollChat(): void {
@@ -574,7 +661,7 @@ export function mountApp(root: HTMLElement): void {
     renderMessages();
     renderHeader();
     persist();
-    scrollToPane("chat");
+    focusTerminal();
 
     const delay = 600 + Math.min(text.length * 8, 1200);
     window.setTimeout(() => {
@@ -652,7 +739,5 @@ export function mountApp(root: HTMLElement): void {
   renderHeader();
   renderMessages();
   setComposerEnabled(true);
-  initMobilePanePosition();
-  updatePaneSwitchFromScroll();
-  maybeShowMobileOnboard();
+  maybeShowWelcome();
 }

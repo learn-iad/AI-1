@@ -1,6 +1,8 @@
 import type { ChatMessage } from "../types";
 
 const KEY = "prompt-trainer-v1";
+const WELCOME_SEEN_KEY = "prompt-trainer-welcome-v2";
+/** @deprecated миграция на welcome-v2 */
 const MOBILE_NAV_HINT_KEY = "prompt-trainer-mobile-nav-hint-v1";
 
 export interface PersistedState {
@@ -85,17 +87,19 @@ export function clearState(): void {
   localStorage.removeItem(KEY);
 }
 
-export function hasSeenMobileNavHint(): boolean {
+export function hasSeenWelcome(): boolean {
   try {
+    if (localStorage.getItem(WELCOME_SEEN_KEY) === "1") return true;
+    // уже видели старый мобильный онбординг
     return localStorage.getItem(MOBILE_NAV_HINT_KEY) === "1";
   } catch {
     return true;
   }
 }
 
-export function markMobileNavHintSeen(): void {
+export function markWelcomeSeen(): void {
   try {
-    localStorage.setItem(MOBILE_NAV_HINT_KEY, "1");
+    localStorage.setItem(WELCOME_SEEN_KEY, "1");
   } catch {
     /* ignore */
   }
