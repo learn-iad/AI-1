@@ -11,6 +11,18 @@
 
 На Pages попадает только сборка (HTML + JS + CSS). Папка `node_modules` и исходники на хостинг **не** загружаются.
 
+### Пустая страница / «ничего не работает»
+
+Если в исходном коде страницы видно `<script … src="/src/main.ts">` — GitHub отдаёт **файлы из ветки**, а не результат `npm run build`. Браузер не умеет запускать TypeScript с Pages, поэтому экран пустой.
+
+**Что сделать:**
+
+1. **Settings → Pages → Build and deployment → Source** — выберите **GitHub Actions**, не «Deploy from a branch».
+2. **Actions → Deploy to GitHub Pages** → откройте последний запуск на `main` → **Re-run all jobs** (или сделайте push в `main`).
+3. Успешный деплой: в HTML должны быть пути вида `/AI-1/assets/index-….js`, не `/src/main.ts`.
+
+Workflow `Deploy to GitHub Pages` должен быть **зелёным**. Если шаг `deploy-pages` падает, чаще всего Pages ещё не переключили на GitHub Actions (п. 1).
+
 ### Размер
 
 Типичная сборка — порядка **15–25 KB** JS (gzip) и **5 KB** CSS. Для GitHub Pages это очень лёгкий проект; лимиты Pages рассчитаны на сайты на мегабайты.
