@@ -11,11 +11,11 @@ const samples: { name: string; text: string; expectMin: number; expectMax: numbe
     expectMax: 45,
   },
   {
-    name: "Olga-like",
+    name: "Olga-like (no role/constraints — below pass)",
     text:
       "Изучи документ помоги составить кратко пояснение для неспециалиста понятным языком доброжелательно",
-    expectMin: 72,
-    expectMax: 85,
+    expectMin: 58,
+    expectMax: 72,
   },
   {
     name: "short structured",
@@ -40,12 +40,37 @@ const samples: { name: string; text: string; expectMin: number; expectMax: numbe
   },
 ];
 
+const passChecks: { name: string; text: string; shouldPass: boolean }[] = [
+  {
+    name: "pass without constraints blocked",
+    text: `Ты — методист. Документ регламент для коллег из другого отдела.
+Дай краткое содержание ключевых пунктов. Простым языком, доброжелательно.`,
+    shouldPass: false,
+  },
+  {
+    name: "pass with real constraints",
+    text: `Ты — методист. Документ регламент для коллег из другого отдела.
+Дай краткое содержание ключевых пунктов. Простым языком, доброжелательно.
+В трёх предложениях; не выдумывай факты.`,
+    shouldPass: true,
+  },
+];
+
 let failed = 0;
 for (const s of samples) {
   const r = evaluatePrompt(s.text, assignment);
   const ok = r.percent >= s.expectMin && r.percent <= s.expectMax;
   console.log(
     `${ok ? "OK" : "FAIL"} ${s.name}: ${r.percent}% (expected ${s.expectMin}-${s.expectMax})`,
+  );
+  if (!ok) failed++;
+}
+
+for (const c of passChecks) {
+  const r = evaluatePrompt(c.text, assignment);
+  const ok = r.isPassed === c.shouldPass;
+  console.log(
+    `${ok ? "OK" : "FAIL"} ${c.name}: passed=${r.isPassed} (expected ${c.shouldPass})`,
   );
   if (!ok) failed++;
 }
