@@ -11,7 +11,7 @@ import {
   xpFromAttempt,
   type LevelInfo,
 } from "./lib/gamification";
-import { renderMarkdownLite } from "./lib/renderMarkdown";
+import { escapeHtml, renderMarkdownLite } from "./lib/renderMarkdown";
 import {
   hasSeenWelcome,
   loadState,
@@ -116,14 +116,14 @@ function feedbackHtml(msg: ChatMessage, lastXp?: number): string {
     ev.strengths.length > 0
       ? `<div class="feedback__section feedback__section--good">
           <p class="feedback__section-title">Что уже хорошо</p>
-          <ul class="feedback__list">${ev.strengths.map((s) => `<li>${s}</li>`).join("")}</ul>
+          <ul class="feedback__list">${ev.strengths.map((s) => `<li>${escapeHtml(s)}</li>`).join("")}</ul>
         </div>`
       : "";
   const improvements =
     ev.improvements.length > 0
       ? `<div class="feedback__section feedback__section--improve">
           <p class="feedback__section-title">Как усилить</p>
-          <ul class="feedback__list">${ev.improvements.map((s) => `<li>${s}</li>`).join("")}</ul>
+          <ul class="feedback__list">${ev.improvements.map((s) => `<li>${escapeHtml(s)}</li>`).join("")}</ul>
         </div>`
       : "";
 
@@ -544,10 +544,19 @@ export function mountApp(root: HTMLElement): void {
     input.focus();
   }
 
+  const passModalBackdrop = root.querySelector("#pass-modal-backdrop") as HTMLElement;
   passModalImprove.addEventListener("click", () => closePassModal());
+  passModalBackdrop.addEventListener("click", () => closePassModal());
   passModalLms.addEventListener("click", () => {
     window.location.href = LMS_URL;
   });
+
+  function handleModalEscape(e: KeyboardEvent): void {
+    if (e.key !== "Escape") return;
+    if (!passModal.hidden) closePassModal();
+    else if (!welcomeModal.hidden) closeWelcomeModal();
+  }
+  document.addEventListener("keydown", handleModalEscape);
 
   function persist(): void {
     const state: PersistedState = {

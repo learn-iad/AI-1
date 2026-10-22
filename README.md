@@ -50,7 +50,7 @@ npm run preview  # проверка сборки
 ## Проверка оценщика
 
 ```bash
-npx tsx src/lib/evaluatePrompt.test.ts
+npm test
 ```
 
 ## Задания

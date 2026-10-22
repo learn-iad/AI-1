@@ -65,7 +65,7 @@ const MATCHERS: Record<CriterionId, Matcher> = {
   role: {
     patterns: [
       new RegExp(`ты\\s*[-—–:]\\s*${WORD}`, "i"),
-      new RegExp(`[ятыы]\\s*[-—–:]\\s*${WORD}`, "i"),
+      new RegExp(`я\\s*[-—–:]\\s*${WORD}`, "i"),
       /действуй\s+как/,
       /выступай\s+в\s+роли/,
       /представь\s*,?\s*что\s+ты/,
@@ -188,7 +188,6 @@ const MATCHERS: Record<CriterionId, Matcher> = {
       /(не\s+(выдумыв|придумыв|додумыв|фантаз))/,
       /(опирайся|используй\s+только|строго\s+по\s+текст)/,
       /(если\s+.*\s+не\s+указан)/,
-      /(кратк|коротк|сжат|лаконич|без\s+воды|не\s+больше\s+\d+)/,
     ],
     keywords: [
       "знак",
@@ -202,11 +201,9 @@ const MATCHERS: Record<CriterionId, Matcher> = {
       "основе документа",
       "факт",
       "точность",
-      "кратко",
-      "коротко",
       "предложен",
-      "1000",
-      "500",
+      "абзац",
+      "строк",
     ],
     strong: [/до\s+\d+\s*знак/, /не\s+выдумыв/],
   },
@@ -237,18 +234,25 @@ const MATCHERS: Record<CriterionId, Matcher> = {
   },
 };
 
-function scoreCriterion(id: CriterionId, raw: string): Omit<CriterionResult, "id" | "label" | "hint"> {
+const SHORT_PROMPT_FEEDBACK =
+  "Промпт слишком короткий — добавьте роль, задачу и контекст.";
+
+function scoreCriterion(
+  id: CriterionId,
+  raw: string,
+  opts?: { promptTooShort?: boolean },
+): Omit<CriterionResult, "id" | "label" | "hint"> {
   const text = normalize(raw);
   const meta = CRITERION_META[id];
   const m = MATCHERS[id];
   const maxScore = meta.weight;
 
-  if (raw.trim().length < 10) {
+  if (opts?.promptTooShort) {
     return {
       score: 0,
       maxScore,
       found: false,
-      feedback: "Промпт слишком короткий — добавьте роль, задачу и контекст.",
+      feedback: SHORT_PROMPT_FEEDBACK,
     };
   }
 
@@ -289,8 +293,33 @@ function scoreCriterion(id: CriterionId, raw: string): Omit<CriterionResult, "id
   }
 
   ratio = Math.min(1, ratio);
+
+  // «Кратко» в задаче — не считаем ограничением по объёму
+  if (id === "constraints") {
+    const hasExplicitLimit =
+      patternHits > 0 ||
+      keywordHits >= 2 ||
+      (keywordHits >= 1 &&
+        /(знак|слов|объем|объём|лимит|огранич|предложен|абзац|строк|выдумыв|факт)/.test(
+          text,
+        ));
+    if (!hasExplicitLimit) {
+      ratio = Math.min(ratio, keywordHits > 0 ? 0.28 : 0.12);
+    }
+  }
+
+  ratio = Math.min(1, ratio);
   const score = Math.round(ratio * maxScore);
-  const found = score >= maxScore * 0.42;
+  let found = score >= maxScore * 0.42;
+  if (id === "constraints") {
+    found =
+      found &&
+      (patternHits > 0 ||
+        keywordHits >= 2 ||
+        /(не\s+(выдумыв|придумыв|додумыв)|только\s+(на\s+основании|из\s+текста|по\s+документ)|до\s+\d+\s*(знак|слов|предложен))/.test(
+          text,
+        ));
+  }
 
   let feedback: string;
   if (score >= maxScore * 0.85) {
@@ -326,6 +355,8 @@ export function evaluatePrompt(
   promptText: string,
   assignment: Assignment,
 ): EvaluationResult {
+  const promptTooShort = promptText.trim().length < 10;
+
   const activeIds: CriterionId[] = [
     ...assignment.requiredCriteria,
     ...(assignment.optionalCriteria ?? []),
@@ -343,7 +374,7 @@ export function evaluatePrompt(
 
   const criteria: CriterionResult[] = activeIds.map((id) => {
     const meta = CRITERION_META[id];
-    const partial = scoreCriterion(id, promptText);
+    const partial = scoreCriterion(id, promptText, { promptTooShort });
     return {
       id,
       label: meta.label,
@@ -381,8 +412,19 @@ export function evaluatePrompt(
     }
   }
 
+  const missingRequired = assignment.requiredCriteria.filter((id) => {
+    const c = criteria.find((x) => x.id === id);
+    return !c?.found;
+  });
+  if (missingRequired.length > 0) {
+    percent = Math.min(percent, PASS_PERCENT - 1);
+  }
+
   const totalScore = requiredScore + optionalScore;
   const maxScore = requiredMax + optionalMax;
+  const isPassed =
+    percent >= PASS_PERCENT &&
+    missingRequired.length === 0;
 
   return {
     totalScore,
@@ -392,8 +434,8 @@ export function evaluatePrompt(
     strengths,
     improvements,
     summary: buildSummary(percent, strengths),
-    isPassed: percent >= PASS_PERCENT,
-    isExcellent: percent >= EXCELLENT_PERCENT,
+    isPassed,
+    isExcellent: isPassed && percent >= EXCELLENT_PERCENT,
   };
 }
 
